@@ -57,8 +57,6 @@ public class RegisterModels
 
     public static BlockEntityWithoutLevelRenderer SOULSPRING_LAMP_RENDERER = null;
 
-    private static Map<ModelResourceLocation, BakedModel> BAKED_MODELS = new HashMap<>();
-
     public static void checkForInitModels()
     {
         if (HOGLIN_HELMET_MODEL != null) return;
@@ -121,14 +119,15 @@ public class RegisterModels
     @SubscribeEvent
     public static void overrideModels(ModelEvent.ModifyBakingResult event)
     {
-        BAKED_MODELS = event.getModels();
-        forceCustomItemModel(ModItems.SOULSPRING_LAMP.get(), ConfigSettings.ANIMATED_SOULSPRING_LAMP_MODEL);
+        // The event's model map is only valid (and only needed) during this event;
+        // holding it in a static would retain a dead copy of every baked model in the game
+        forceCustomItemModel(event.getModels(), ModItems.SOULSPRING_LAMP.get(), ConfigSettings.ANIMATED_SOULSPRING_LAMP_MODEL);
     }
 
-    public static Map.Entry<ModelResourceLocation, BakedModel> getBakedModel(Item item)
+    public static Map.Entry<ModelResourceLocation, BakedModel> getBakedModel(Map<ModelResourceLocation, BakedModel> models, Item item)
     {
         ResourceLocation itemID = BuiltInRegistries.ITEM.getKey(item);
-        return BAKED_MODELS.entrySet().stream()
+        return models.entrySet().stream()
                 .filter(entry -> entry.getKey().toString().contains(itemID.toString()))
                 .findFirst()
                 .orElse(null);
@@ -138,9 +137,9 @@ public class RegisterModels
      * Forces the item's model to return {@code true} for {@link BakedModel#isCustomRenderer()}.
      * Used for custom item BEWLRs.
      */
-    public static void forceCustomItemModel(Item item, Supplier<Boolean> custom)
+    public static void forceCustomItemModel(Map<ModelResourceLocation, BakedModel> models, Item item, Supplier<Boolean> custom)
     {
-        Optional<Map.Entry<ModelResourceLocation, BakedModel>> modelOpt = Optional.ofNullable(getBakedModel(item));
+        Optional<Map.Entry<ModelResourceLocation, BakedModel>> modelOpt = Optional.ofNullable(getBakedModel(models, item));
 
         if (modelOpt.isPresent() && modelOpt.get().getValue() instanceof SimpleBakedModel model)
         {
@@ -159,7 +158,7 @@ public class RegisterModels
                 {   return custom.get();
                 }
             };
-            BAKED_MODELS.put(modelOpt.get().getKey(), customModel);
+            models.put(modelOpt.get().getKey(), customModel);
         }
     }
 
