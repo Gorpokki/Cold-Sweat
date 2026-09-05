@@ -80,6 +80,9 @@ public class CompatManager
 {
     private static final boolean BOP_LOADED = modLoaded("biomesoplenty");
     private static final boolean SERENE_SEASONS_LOADED = modLoaded("sereneseasons");
+    // Ecliptic Seasons' API bridge claims the "sereneseasons" modid and ships the API classes, but not
+    // GlitchCore. Only the event-bus registration below needs it; everything else works on the bridge.
+    private static final boolean GLITCHCORE_LOADED = modLoaded("glitchcore");
     private static final boolean CURIOS_LOADED = modLoaded("curios");
     private static final boolean SPIRIT_LOADED = modLoaded("spirit");
     private static final boolean BYG_LOADED = modLoaded("byg");
@@ -600,7 +603,7 @@ public class CompatManager
             });
         }
 
-        if (SERENE_SEASONS_LOADED)
+        if (SERENE_SEASONS_LOADED && GLITCHCORE_LOADED)
         {
             // Register event to GlitchCore's stupid redundant proprietary event bus
             new Object()
