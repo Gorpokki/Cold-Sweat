@@ -75,7 +75,8 @@ public abstract class WorldHelper
 {
     static Map<ResourceKey<Level>, DummyPlayer> DUMMY_PLAYERS = new HashMap<>();
     static Map<ResourceKey<Level>, DummyEntity> DUMMY_ENTITIES = new HashMap<>();
-    static Map<ResourceKey<Level>, Map<BlockPos, TempSnapshot>> TEMPERATURE_CHECKS = new HashMap<>();
+    static Map<ResourceKey<Level>, Map<BlockPos, TempSnapshot>> TEMPERATURE_CACHE = new HashMap<>();
+    static Map<ResourceKey<Level>, Map<BlockPos, HearthSnapshot>> HEARTH_CACHE = new HashMap<>();
 
     private static final Map<BlockEntity, Pair<CompoundTag, Long>> BLOCK_ENTITY_DATA_CACHE = new HashMap<>();
 
@@ -83,7 +84,8 @@ public abstract class WorldHelper
     public static void clearCachesOnUnload(ServerStoppedEvent event)
     {   DUMMY_PLAYERS.clear();
         DUMMY_ENTITIES.clear();
-        TEMPERATURE_CHECKS.clear();
+        TEMPERATURE_CACHE.clear();
+        HEARTH_CACHE.clear();
     }
 
     public static int getHeight(BlockPos pos, Level level, Heightmap.Types heightmap)
@@ -695,19 +697,45 @@ public abstract class WorldHelper
     public static double getTimeMultiplier(LevelAccessor level)
     {
         if (level.dimensionType().hasCeiling())
-        {   return 0.5;
+        {   return 0;
         }
         if (level.dimensionType().hasFixedTime())
         {   return level.dimensionType().fixedTime().getAsLong();
         }
-        return Math.sin(level.dayTime() / (12000 / Math.PI));
+
+        final long dayLength = 24000L;
+        long time = Math.floorMod(level.dayTime(), dayLength);
+        long hottestTime = ConfigSettings.HOTTEST_TIME.get();
+        long coldestTime = ConfigSettings.COLDEST_TIME.get();
+
+        if (hottestTime == coldestTime)
+        {   return 0;
+        }
+
+        long coolingLength = Math.floorMod(coldestTime - hottestTime, dayLength);
+        long warmingLength = dayLength - coolingLength;
+
+        long fromHottest = Math.floorMod(time - hottestTime, dayLength);
+
+        double angle;
+        if (fromHottest <= coolingLength)
+        {   double progress = fromHottest / (double) coolingLength;
+            angle = progress * Math.PI;
+        }
+        else
+        {   long fromColdest = fromHottest - coolingLength;
+            double progress = fromColdest / (double) warmingLength;
+            angle = Math.PI + progress * Math.PI;
+        }
+
+        return Math.cos(angle);
     }
 
-    public static double getWaterTemperatureAt(Level level, BlockPos pos)
+    public static double getWaterTemperatureDelta(Level level, BlockPos pos)
     {
         pos = sublevelToWorld(level, pos);
         Holder<Biome> biome = level.getBiome(pos);
-        double biomeTemp = CSMath.averagePair(getBiomeTemperatureRange(level, biome));
+        double biomeTemp = getBiomeTemperature(level, biome);
         double defaultWaterTemp = getDefaultWaterTemp(biomeTemp);
         BiomeTempData biomeTempData = ConfigSettings.BIOME_TEMPS.get(level.registryAccess()).get(biome);
         // No config for this biome
@@ -715,18 +743,42 @@ public abstract class WorldHelper
         {   return defaultWaterTemp;
         }
         // Use configured water temp for biome
-        Optional<Double> waterTemp = biomeTempData.getWaterTemp();
+        Optional<Double> waterTempOpt = biomeTempData.getWaterTemp();
+        double waterTemp;
         if (biomeTempData.isOffset())
-        {   return waterTemp.orElse(0d) + defaultWaterTemp;
+        {   waterTemp = waterTempOpt.orElse(0d) + defaultWaterTemp;
         }
-        else return waterTemp.orElse(defaultWaterTemp);
+        else waterTemp = waterTempOpt.orElse(defaultWaterTemp);
+        return waterTemp - biomeTemp;
     }
 
     public static double getDefaultWaterTemp(double biomeTemp)
     {
-        if (biomeTemp > 2) return -0.25;
-        if (biomeTemp < -0.5) return -0.5;
-        return -(Math.pow(biomeTemp - 2, 4) / 156) - 0.25;
+        double offset;
+        if (biomeTemp > 2) offset = -0.25;
+        else if (biomeTemp < -0.5) offset = -0.5;
+        else offset = -(Math.pow(biomeTemp - 2, 4) / 156) - 0.25;
+
+        return biomeTemp + offset;
+    }
+
+    public static double getFreezingPoint(Level level, BlockPos pos)
+    {
+        pos = sublevelToWorld(level, pos);
+        Holder<Biome> biome = level.getBiome(pos);
+        double biomeTemp = CSMath.averagePair(getBiomeTemperatureRange(level, biome));
+        double defaultFreezingPoint = CSMath.blend(0, 0.4, biomeTemp, 1, 0);
+        BiomeTempData biomeTempData = ConfigSettings.BIOME_TEMPS.get(level.registryAccess()).get(biome);
+        // No config for this biome
+        if (biomeTempData == null)
+        {   return defaultFreezingPoint;
+        }
+        // Use configured freezing point for biome
+        Optional<Double> freezingPoint = biomeTempData.getFreezingPoint();
+        if (biomeTempData.isOffset())
+        {   return freezingPoint.orElse(0d) + defaultFreezingPoint;
+        }
+        else return freezingPoint.orElse(defaultFreezingPoint);
     }
 
     /**
@@ -743,7 +795,7 @@ public abstract class WorldHelper
         boolean sensitive = (flags & 1) != 0;
         boolean forceUpdate = (flags & 2) != 0;
 
-        Map<BlockPos, TempSnapshot> snapshots = TEMPERATURE_CHECKS.computeIfAbsent(level.dimension(), dim -> new HashMap<>());
+        Map<BlockPos, TempSnapshot> snapshots = TEMPERATURE_CACHE.computeIfAbsent(level.dimension(), dim -> new HashMap<>());
         int tickSpeedMultiplier = 1 + level.getGameRules().getInt(GameRules.RULE_RANDOMTICKING) / 20;
 
         BlockPos segment = new BlockPos((pos.getX() >> 3) << 3,
@@ -771,16 +823,9 @@ public abstract class WorldHelper
         // Get modifiers
         List<TempModifier> modifiers = new ArrayList<>(Temperature.getModifiers(dummy, Temperature.Trait.WORLD));
 
-        // Get insulation from hearths
-        Pair<Integer, Integer> maxCoolingHeating = getInsulationAt(level, pos, 2);
-        if (maxCoolingHeating.getFirst() > 0)
-        {   modifiers.add(new FrigidnessTempModifier(maxCoolingHeating.getFirst()));
-        }
-        if (maxCoolingHeating.getSecond() > 0)
-        {   modifiers.add(new WarmthTempModifier(maxCoolingHeating.getSecond()));
-        }
         // Get & store temperature
         double tempAt = Temperature.apply(0, dummy, Temperature.Trait.WORLD, modifiers, true);
+        tempAt = applyHearthInsulation(level, pos, dummy, tempAt);
         snapshots.put(segment, new TempSnapshot(level.getGameTime(), tempAt));
 
         return tempAt;
@@ -813,15 +858,8 @@ public abstract class WorldHelper
         dummy.setPos(CSMath.getCenterPos(pos));
         List<TempModifier> modifiers = new ArrayList<>(Temperature.getModifiers(dummy, Temperature.Trait.WORLD));
 
-        // Get insulation from hearths
-        Pair<Integer, Integer> maxCoolingHeating = getInsulationAt(level, pos, 2);
-        if (maxCoolingHeating.getFirst() > 0)
-        {   modifiers.add(new FrigidnessTempModifier(maxCoolingHeating.getFirst()));
-        }
-        if (maxCoolingHeating.getSecond() > 0)
-        {   modifiers.add(new WarmthTempModifier(maxCoolingHeating.getSecond()));
-        }
-        return Temperature.apply(0, dummy, Temperature.Trait.WORLD, modifiers, true);
+        double temp = Temperature.apply(0, dummy, Temperature.Trait.WORLD, modifiers, true);
+        return applyHearthInsulation(level, pos, dummy, temp);
     }
 
     public static DummyPlayer getDummyPlayer(Level level)
@@ -867,7 +905,7 @@ public abstract class WorldHelper
     }
 
     public Map<ResourceKey<Level>, Map<BlockPos, TempSnapshot>> getWorldTempCache()
-    {   return TEMPERATURE_CHECKS;
+    {   return TEMPERATURE_CACHE;
     }
 
     public static boolean allAdjacentBlocksMatch(BlockPos pos, Predicate<BlockPos> predicate)
@@ -892,13 +930,10 @@ public abstract class WorldHelper
         if (pos.getY() >= levelReader.getMinBuildHeight() && pos.getY() < levelReader.getMaxBuildHeight()
         && levelReader instanceof ServerLevel serverLevel)
         {
-            if (surroundedByBlock(levelReader, pos, Blocks.ICE))
-            {   return true;
-            }
             Lazy<Boolean> freezingTemp = Lazy.of(() ->
-            {   double waterTemp = getWaterTemperatureAt(serverLevel, pos);
-                double temp = getRoughTemperatureAt(serverLevel, pos) + waterTemp;
-                return temp <= 0;
+            {   double temp = getRoughTemperatureAt(serverLevel, pos);
+                double threshold = getFreezingPoint(serverLevel, pos);
+                return temp <= threshold;
             });
 
             if (!mustBeAtEdge)
@@ -917,9 +952,9 @@ public abstract class WorldHelper
             if (mustBeAtEdge && surroundedByBlock(levelReader, pos, Blocks.ICE))
             {   return false;
             }
-            double waterTemp = getWaterTemperatureAt(serverLevel, pos);
-            double temp = getRoughTemperatureAt(serverLevel, pos) + waterTemp;
-            return temp > 0f;
+            double temp = getRoughTemperatureAt(serverLevel, pos);
+            double threshold = getFreezingPoint(serverLevel, pos);
+            return temp > threshold;
         }
         return false;
     }
@@ -957,12 +992,21 @@ public abstract class WorldHelper
         return false;
     }
 
-    public static Pair<Integer, Integer> getInsulationAt(Level level, BlockPos pos, int chunkRadius)
+    /**
+     * @param chunkRadius The radius of chunks to check for hearths.
+     * @return A list of all hearths that can affect the given position.
+     */
+    public static List<HearthBlockEntity> getHearthsAffectingPos(Level level, BlockPos pos, int chunkRadius)
     {
+        HearthSnapshot snapshot = HEARTH_CACHE.computeIfAbsent(level.dimension(), dim -> new HashMap<>()).get(pos);
+        if (snapshot != null && level.getGameTime() - snapshot.timestamp < 20)
+        {   return snapshot.hearths();
+        }
         pos = sublevelToWorld(level, pos);
-        int maxCoolingLevel = 0;
-        int maxHeatingLevel = 0;
+
+        List<HearthBlockEntity> hearths = new ArrayList<>();
         ChunkPos chunkPos = new ChunkPos(pos);
+
         for (int x = -chunkRadius; x <= chunkRadius; x++)
         for (int z = -chunkRadius; z <= chunkRadius; z++)
         {
@@ -972,14 +1016,43 @@ public abstract class WorldHelper
             for (BlockPos bePos : chunk.getBlockEntitiesPos())
             {
                 BlockEntity be = chunk.getBlockEntity(bePos);
-                if (be instanceof HearthBlockEntity hearth && hearth.getPathLookup().containsKey(pos))
-                {
-                    maxCoolingLevel = Math.max(maxCoolingLevel, hearth.getCoolingLevel());
-                    maxHeatingLevel = Math.max(maxHeatingLevel, hearth.getHeatingLevel());
+                // Null entries are positions the hearth failed to spread to
+                if (be instanceof HearthBlockEntity hearth && hearth.getPathLookup().get(pos) != null)
+                {   hearths.add(hearth);
                 }
             }
         }
-        return Pair.of(maxCoolingLevel, maxHeatingLevel);
+        snapshot = new HearthSnapshot(level.getGameTime(), hearths);
+        HEARTH_CACHE.get(level.dimension()).put(pos, snapshot);
+        return hearths;
+    }
+
+    /**
+     * Applies the insulation that nearby hearths would give a default entity at this position
+     * @param temp The temperature at this position, excluding hearth insulation
+     */
+    public static double applyHearthInsulation(Level level, BlockPos pos, LivingEntity dummy, double temp)
+    {
+        double minTemp = ConfigSettings.MIN_TEMP.get();
+        double maxTemp = ConfigSettings.MAX_TEMP.get();
+        int cooling = 0;
+        int heating = 0;
+        for (HearthBlockEntity hearth : getHearthsAffectingPos(level, pos, 2))
+        {
+            if (hearth.isRemoved() || hearth.getLevel() != level) continue;
+
+            HearthBlockEntity.Insulation insulation = hearth.getInsulationFor(temp, minTemp, maxTemp);
+            cooling = Math.max(cooling, insulation.cooling());
+            heating = Math.max(heating, insulation.heating());
+        }
+        List<TempModifier> modifiers = new ArrayList<>(2);
+        if (cooling > 0)
+        {   modifiers.add(new FrigidnessTempModifier(cooling));
+        }
+        if (heating > 0)
+        {   modifiers.add(new WarmthTempModifier(heating));
+        }
+        return Temperature.apply(temp, dummy, Temperature.Trait.WORLD, modifiers, true);
     }
 
     public static List<BlockPos> getPositionsInAABB(AABB bb)
@@ -1015,4 +1088,5 @@ public abstract class WorldHelper
     }
 
     public record TempSnapshot(long timestamp, double temperature) {}
+    public record HearthSnapshot(long timestamp, List<HearthBlockEntity> hearths) {}
 }

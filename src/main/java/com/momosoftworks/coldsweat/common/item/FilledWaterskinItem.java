@@ -1,6 +1,7 @@
 package com.momosoftworks.coldsweat.common.item;
 
 import cn.mlus.thirst.content.registry.ThirstComponent;
+import com.momosoftworks.coldsweat.api.event.common.item.WaterskinEvent;
 import com.momosoftworks.coldsweat.api.temperature.modifier.WaterTempModifier;
 import com.momosoftworks.coldsweat.api.temperature.modifier.WaterskinTempModifier;
 import com.momosoftworks.coldsweat.api.util.placement.Matcher;
@@ -97,7 +98,7 @@ public class FilledWaterskinItem extends Item
     public void inventoryTick(ItemStack stack, Level world, Entity entity, int slot, boolean isSelected)
     {
         super.inventoryTick(stack, world, entity, slot, isSelected);
-        if (EntityTempManager.isTemperatureEnabled(entity) && entity.tickCount % 5 == 0)
+        if (!world.isClientSide() && EntityTempManager.isTemperatureEnabled(entity) && entity.tickCount % 5 == 0)
         {
             double itemTemp = stack.get(ModItemComponents.WATER_TEMPERATURE);
             boolean shouldDrain = ConfigSettings.ITEM_TEMPERATURES.get().get(stack.getItem())
@@ -160,6 +161,9 @@ public class FilledWaterskinItem extends Item
     {
         // Create empty waterskin item
         ItemStack emptyStack = stack.getCraftingRemainingItem();
+        WaterskinEvent.Empty event = new WaterskinEvent.Empty(stack, emptyStack, entity instanceof Player player ? player : null);
+        NeoForge.EVENT_BUS.post(event);
+        emptyStack = event.getResultWaterskin();
 
         // Add the item to the player's inventory
         if (entity instanceof Player player && player.getInventory().contains(emptyStack))
@@ -328,7 +332,7 @@ public class FilledWaterskinItem extends Item
             ItemStack emptyWaterskin = super.getCraftingRemainingItem(stack);
 
             // Preserve NBT (except temperature)
-            emptyWaterskin.applyComponents(stack.getComponents());
+            emptyWaterskin.applyComponents(stack.getComponentsPatch());
             emptyWaterskin.remove(ModItemComponents.WATER_TEMPERATURE);
             emptyWaterskin.remove(DataComponents.DAMAGE);
             emptyWaterskin.remove(DataComponents.MAX_DAMAGE);

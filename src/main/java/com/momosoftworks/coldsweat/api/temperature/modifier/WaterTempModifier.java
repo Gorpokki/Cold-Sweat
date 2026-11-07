@@ -36,7 +36,7 @@ public class WaterTempModifier extends TempModifier
     {
         BlockPos entityPos = WorldHelper.sublevelToWorld(entity.level(), entity.blockPosition());
         Double[] waterTemps = WorldHelper.getPositionGrid(entityPos, 9, 4).stream()
-                              .map(pos -> WorldHelper.getWaterTemperatureAt(entity.level(), pos))
+                              .map(pos -> WorldHelper.getWaterTemperatureDelta(entity.level(), pos))
                               .toArray(Double[]::new);
         return CSMath.average(waterTemps);
     }
@@ -44,34 +44,26 @@ public class WaterTempModifier extends TempModifier
     @Override
     public Function<Double, Double> calculate(LivingEntity entity, Temperature.Trait trait)
     {
-        double worldTemp = Temperature.get(entity, Temperature.Trait.WORLD);
-        double minWorldTemp = ConfigSettings.MIN_TEMP.get();
-        double maxWorldTemp = ConfigSettings.MAX_TEMP.get();
-        double configDrySpeed = ConfigSettings.DRYOFF_SPEED.get();
-
         double temperature = this.getTemperature();
-        double target = this.getTargetTemperature(entity);
-        double addAmount;
+        double tickRate = this.getTickRate() / 5.0;
+        double newTemperature;
         if (WorldHelper.isInWater(entity))
-        {
-            if (temperature < target)
-            {   addAmount = Math.min(ConfigSettings.WATER_SOAK_SPEED.get(), target - temperature);
-            }
-            else
-            {   addAmount = Math.max(-ConfigSettings.WATER_SOAK_SPEED.get(), target - temperature);
-            }
+        {   newTemperature = CSMath.approach(temperature, this.getTargetTemperature(entity), ConfigSettings.WATER_SOAK_SPEED.get() * tickRate);
         }
         else if (WorldHelper.isRainingAt(entity.level(), entity.blockPosition()))
-        {   addAmount = Math.max(-ConfigSettings.RAIN_SOAK_SPEED.get(), -ConfigSettings.MAX_RAIN_SOAK.get() - temperature);
+        {
+            double maxRainEffect = -ConfigSettings.MAX_RAIN_SOAK.get();
+            newTemperature = temperature > maxRainEffect
+                           ? CSMath.approach(temperature, maxRainEffect, ConfigSettings.RAIN_SOAK_SPEED.get() * tickRate)
+                           : temperature;
         }
         else
-        {   addAmount = 0;
+        {
+            double worldTemp = Temperature.get(entity, Temperature.Trait.WORLD);
+            double configDrySpeed = ConfigSettings.DRYOFF_SPEED.get();
+            double dryAmount = CSMath.blendExp(configDrySpeed / 1.5, configDrySpeed * 5, worldTemp, ConfigSettings.MIN_TEMP.get(), ConfigSettings.MAX_TEMP.get(), 20);
+            newTemperature = CSMath.shrink(temperature, dryAmount * tickRate);
         }
-        double dryAmount = WorldHelper.isInWater(entity) ? 0
-                         : CSMath.blendExp(configDrySpeed / 1.5, configDrySpeed * 5, worldTemp, minWorldTemp, maxWorldTemp, 20);
-
-        double tickRate = this.getTickRate() / 5.0;
-        double newTemperature = CSMath.shrink(temperature + addAmount * tickRate, dryAmount * tickRate);
         if (newTemperature == 0)
         {   this.expires(0);
         }
