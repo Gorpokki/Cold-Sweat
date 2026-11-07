@@ -14,6 +14,7 @@ import com.momosoftworks.coldsweat.common.capability.handler.EntityTempManager;
 import com.momosoftworks.coldsweat.compat.create.ColdSweatPonderPlugin;
 import com.momosoftworks.coldsweat.compat.curios.EquipableCurio;
 import com.momosoftworks.coldsweat.config.ConfigSettings;
+import com.momosoftworks.coldsweat.core.init.ModBlocks;
 import com.momosoftworks.coldsweat.core.init.ModItems;
 import com.momosoftworks.coldsweat.data.codec.configuration.InsulatorData;
 import com.momosoftworks.coldsweat.data.tag.ModInsulatorTags;
@@ -21,6 +22,7 @@ import com.momosoftworks.coldsweat.data.tag.ModItemTags;
 import com.momosoftworks.coldsweat.util.math.CSMath;
 import com.momosoftworks.coldsweat.util.serialization.ConfigHelper;
 import com.simibubi.create.AllDataComponents;
+import com.simibubi.create.api.contraption.BlockMovementChecks;
 import com.simibubi.create.content.equipment.armor.BacktankItem;
 import com.simibubi.create.content.equipment.armor.BacktankUtil;
 import com.simibubi.create.content.fluids.pipes.EncasedPipeBlock;
@@ -37,6 +39,7 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import glitchcore.event.EventManager;
 import net.createmod.ponder.foundation.PonderIndex;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.FormattedText;
@@ -57,7 +60,6 @@ import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.fml.loading.FMLLoader;
 import net.neoforged.fml.loading.moddiscovery.ModFileInfo;
-import net.neoforged.neoforge.capabilities.ICapabilityInvalidationListener;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.tick.PlayerTickEvent;
 import org.apache.maven.artifact.versioning.ArtifactVersion;
@@ -94,7 +96,8 @@ public class CompatManager
     private static final boolean WEATHER_LOADED = modLoaded("weather2");
     private static final boolean WYTHERS_LOADED = modLoaded("wwoo");
     private static final boolean TOOLTIPS_LOADED = modLoaded("legendarytooltips");
-    private static final boolean PRIMAL_WINTER_LOADED = modLoaded("primalwinter");
+    private static final boolean PRIMAL_WINTER_LOADED = modLoaded("primalwinter", "", "6.0.2");
+    private static final boolean COLDER_PRIMAL_WINTER_LOADED = modLoaded("primalwinter", "6.1.0", "");
     private static final boolean THIRST_LOADED = modLoaded("thirst", "1.21.1-3.0.0");
     private static final boolean ICEBERG_LOADED = modLoaded("iceberg", "1.3.0");
     private static final boolean SPOILED_LOADED = modLoaded("spoiled", "6.2.0");
@@ -202,6 +205,9 @@ public class CompatManager
     }
     public static boolean isPrimalWinterLoaded()
     {   return PRIMAL_WINTER_LOADED;
+    }
+    public static boolean isColderPrimalWinterLoaded()
+    {   return COLDER_PRIMAL_WINTER_LOADED;
     }
     public static boolean isThirstLoaded()
     {   return THIRST_LOADED;
@@ -686,7 +692,31 @@ public class CompatManager
     {
         @SubscribeEvent
         public static void setupModEvents(FMLCommonSetupEvent event)
-        {}
+        {
+            if (isCreateLoaded())
+            {
+                new Object()
+                {
+                    public void registerAttachedChecks()
+                    {
+                        event.enqueueWork(() ->
+                        {
+                            // Register top/bottom halves of hearth as being connected
+                            BlockMovementChecks.registerAttachedCheck((state, world, pos, direction) ->
+                            {
+                                if (state.getBlock() == ModBlocks.HEARTH_BOTTOM.value())
+                                {   return BlockMovementChecks.CheckResult.of(direction == Direction.UP);
+                                }
+                                if (state.getBlock() == ModBlocks.HEARTH_TOP.value())
+                                {   return BlockMovementChecks.CheckResult.of(direction == Direction.DOWN);
+                                }
+                                return BlockMovementChecks.CheckResult.PASS;
+                            });
+                        });
+                    }
+                }.registerAttachedChecks();
+            }
+        }
 
         @SubscribeEvent
         public static void setupModClientEvents(FMLClientSetupEvent event)
