@@ -39,10 +39,13 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           sha=$(tr -d '[:space:]' < .github/quality-baseline)
-          mb=$(git merge-base "origin/$BASE_REF" HEAD)
+          mb=$(git merge-base "origin/$BASE_REF" HEAD) || { echo "::error::Cannot compute the merge base of origin/$BASE_REF and HEAD."; exit 1; }
           if git merge-base --is-ancestor "$sha" HEAD && ! git merge-base --is-ancestor "$sha" "$mb"; then
             base="$sha"
           else
+            if ! git merge-base --is-ancestor "$sha" HEAD; then
+              echo "::warning::Baseline $sha is not an ancestor of HEAD; diffing from the merge base instead."
+            fi
             base="$mb"
           fi
           echo "BASE=$base" >> "$GITHUB_ENV"
@@ -51,8 +54,9 @@ jobs:
         id: scope
         env:
           HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
-          if [[ "$HEAD_REF" == sync/* ]]; then
+          if [[ "$HEAD_REF" == sync/* && "$HEAD_REPO" == "$GITHUB_REPOSITORY" ]]; then
             echo 'Skipped quality scoring: this is an upstream sync pull request, which carries only upstream code.'
           else
             echo 'score=true' >> "$GITHUB_OUTPUT"
@@ -82,15 +86,6 @@ jobs:
         uses: Gorpokki/minecraft-mod-actions/sarif-changed-lines@fca1c54653822990b918578721acade3c732513b # v1.1.0
         with:
           sarif-file: ${{ runner.temp }}/qlty-changed.sarif
-          base: ${{ env.BASE }}
-      - name: Lint every workflow file with actionlint
-        if: ${{ !cancelled() && steps.scope.outputs.score == 'true' }}
-        run: qlty check --all --filter actionlint --no-formatters --no-progress --no-fail --level medium --sarif > "$RUNNER_TEMP/actionlint-all.sarif"
-      - name: Fail actionlint findings on changed lines
-        if: ${{ !cancelled() && steps.scope.outputs.score == 'true' }}
-        uses: Gorpokki/minecraft-mod-actions/sarif-changed-lines@fca1c54653822990b918578721acade3c732513b # v1.1.0
-        with:
-          sarif-file: ${{ runner.temp }}/actionlint-all.sarif
           base: ${{ env.BASE }}
       - name: List changed workflow files
         id: changed-workflows
