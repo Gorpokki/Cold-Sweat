@@ -68,9 +68,18 @@ jobs:
       - name: Lint every workflow file with actionlint
         if: ${{ !cancelled() }}
         run: qlty check --all --filter actionlint --no-formatters --no-progress --fail-level medium
-      - name: Scan whole workflow files with zizmor
+      - name: List changed workflow files
         if: ${{ !cancelled() }}
-        run: zizmor --no-progress .github/workflows
+        run: git diff --name-only --diff-filter=ACMR -z "$BASE"...HEAD -- '.github/workflows/*.yml' '.github/workflows/*.yaml' > "$RUNNER_TEMP/changed-workflows"
+      - name: Scan changed workflow files with zizmor
+        if: ${{ !cancelled() }}
+        run: |
+          mapfile -d '' -t files < "$RUNNER_TEMP/changed-workflows"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo 'No changed workflow files to scan.'
+            exit 0
+          fi
+          zizmor --no-progress "${files[@]}"
       - name: Fail new or worse functions above CCN 15 or cognitive complexity 15
         if: ${{ !cancelled() }}
         uses: Gorpokki/minecraft-mod-actions/complexity-ratchet@fca1c54653822990b918578721acade3c732513b # v1.1.0
@@ -85,9 +94,17 @@ jobs:
             *.cjs
             *.cs
             *.java
-      - name: Check workflows for new supply-chain risks
+      - name: Check changed workflows for new supply-chain risks
         if: ${{ !cancelled() }}
-        run: poutine analyze_local . --quiet --fail-on-violation
+        run: |
+          mapfile -d '' -t files < "$RUNNER_TEMP/changed-workflows"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo 'No changed workflow files to scan.'
+            exit 0
+          fi
+          scan=$(mktemp -d "$RUNNER_TEMP/poutine.XXXXXX")
+          cp --parents "${files[@]}" "$scan"
+          poutine analyze_local "$scan" --config "$GITHUB_WORKSPACE/.poutine.yml" --quiet --fail-on-violation
       - id: changed-js-ts
         name: List changed JavaScript and TypeScript files
         if: ${{ !cancelled() }}
